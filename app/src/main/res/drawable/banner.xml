@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 320x180 TV launcher banner: dark gradient with a TV glyph. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp" android:height="180dp"
+    android:viewportWidth="320" android:viewportHeight="180">
+    <path android:pathData="M0,0h320v180h-320z" android:fillColor="#FF0E1A2E" />
+    <path android:pathData="M0,120h320v60h-320z" android:fillColor="#FF16294A" />
+    <path android:pathData="M110,45h100a8,8 0,0 1,8 8v62a8,8 0,0 1,-8 8h-100a8,8 0,0 1,-8 -8v-62a8,8 0,0 1,8 -8z"
+        android:fillColor="#FF3D8BFF" />
+    <path android:pathData="M145,64l36,20l-36,20z" android:fillColor="#FFFFFFFF" />
+    <path android:pathData="M140,131h40v6h-40z" android:fillColor="#FF3D8BFF" />
+</vector>

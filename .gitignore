@@ -1,0 +1,12 @@
+*.iml
+.gradle/
+build/
+local.properties
+.idea/
+keystore.properties
+*.jks
+*.keystore
+shots/
+# original full-size pictures; the app uses the scaled copies in res/drawable-nodpi
+/*_bg.jpg
+/*_bg.png
