@@ -22,7 +22,7 @@ The APK is not on Google Play; install it with the **Downloader** app:
 1. Install **Downloader** (by AFTVnews) from the Play Store / Amazon Appstore.
 2. Fire TV only: Settings → My Fire TV → Developer options → Install unknown apps → allow Downloader.
    Google TV / Android TV: Downloader asks for the permission the first time.
-3. Open Downloader and enter this address:
+3. Open Downloader and enter the code **`5060681`** — or the full address:
 
    ```
    https://github.com/lukacaterpilar/iptvStreamer/releases/latest/download/MamaTV.apk
@@ -31,7 +31,7 @@ The APK is not on Google Play; install it with the **Downloader** app:
 4. Install, open Mama TV and sign in with your provider's server, username and password
    (or paste your full M3U link into the server field — press OK on a field to type from your phone).
 
-**Updating:** repeat step 3 — the new version installs over the old one and keeps your login and favourites.
+**Updating:** repeat step 3 (same code) — the new version installs over the old one and keeps your login and favourites.
 
 Requirements: Android 7.0 or newer (Fire TV Stick 4K and newer; the original 1st/2nd-gen Fire TV Stick is not supported).
 
