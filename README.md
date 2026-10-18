@@ -14,6 +14,7 @@ Languages: Hrvatski · English · Italiano · Deutsch
 - **Multiple profiles** (several subscriptions, switch in settings)
 - **Type from your phone**: scan a QR code on the TV and use the phone keyboard for any text field
 - Auto-start when the TV turns on, resume last channel, selectable background and app name/colour
+- Automatic updates from GitHub releases (can be switched off; manual check in settings)
 
 ## Install (Android TV, Google TV, Fire TV)
 
@@ -31,7 +32,10 @@ The APK is not on Google Play; install it with the **Downloader** app:
 4. Install, open Mama TV and sign in with your provider's server, username and password
    (or paste your full M3U link into the server field — press OK on a field to type from your phone).
 
-**Updating:** repeat step 3 (same code) — the new version installs over the old one and keeps your login and favourites.
+**Updating:** the app checks GitHub for a new version at start and every 6 hours, downloads it and asks whether to
+install it (Settings → *App update*: switch automatic update off, or press *Check for updates* to update right away).
+The first time, Android asks you to allow Mama TV to install unknown apps. Login and favourites are kept.
+You can also repeat step 3 with Downloader (same code).
 
 Requirements: Android 7.0 or newer (Fire TV Stick 4K and newer; the original 1st/2nd-gen Fire TV Stick is not supported).
 
@@ -59,6 +63,11 @@ export ANDROID_HOME=~/Android/Sdk          # SDK with platform 35 + build-tools 
 gradle assembleRelease                      # Gradle 8.9, JDK 17+
 # -> app/build/outputs/apk/release/MamaTV.apk
 ```
+
+**Publishing a new version:** bump both `versionCode` and `versionName` in `app/build.gradle.kts`, build, then create a
+GitHub release whose tag is the version name prefixed with `v` (e.g. `v1.5`) and attach the APK as `MamaTV.apk`.
+Installed apps compare their version name with the newest release tag and pick up the asset from there.
+Updates install only over an APK signed with the same key, so release builds must always use the release keystore.
 
 Without a `keystore.properties` file the APK is signed with the debug key. Releases are signed with the
 project's release key (`keystore.properties` → `storeFile`, `storePassword`, `keyAlias`, `keyPassword`; not in git).

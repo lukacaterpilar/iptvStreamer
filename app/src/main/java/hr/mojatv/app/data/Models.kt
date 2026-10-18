@@ -27,6 +27,8 @@ data class Movie(
     val categoryId: String,
     val extension: String,
     val rating: String?,
+    /** Epoch seconds when the provider added it; drives "Newly added". */
+    val added: Long,
 )
 
 data class MovieInfo(
@@ -36,6 +38,7 @@ data class MovieInfo(
     val duration: String,
     val cast: String,
     val director: String,
+    val backdrop: String?,
 )
 
 data class Series(
@@ -45,6 +48,8 @@ data class Series(
     val categoryId: String,
     val plot: String?,
     val rating: String?,
+    /** Epoch seconds of the last change (new episodes etc.); drives "Recently updated". */
+    val lastModified: Long,
 )
 
 data class Episode(
@@ -58,4 +63,15 @@ data class Episode(
     val duration: String,
 )
 
-data class SeriesInfo(val plot: String, val genre: String, val seasons: Map<Int, List<Episode>>)
+data class SeriesInfo(
+    val plot: String,
+    val genre: String,
+    val releaseDate: String,
+    val cast: String,
+    val director: String,
+    val backdrop: String?,
+    val seasons: Map<Int, List<Episode>>,
+)
+
+/** Subscription details from the login response. */
+data class AccountInfo(val status: String, val expiresAt: Long?, val maxConnections: Int?, val isTrial: Boolean)

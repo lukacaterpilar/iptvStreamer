@@ -104,6 +104,7 @@ class XtreamApi(private val c: Credentials) {
                     categoryId = o.str("category_id") ?: categoryId ?: "",
                     extension = o.str("container_extension")?.takeIf { it.isNotBlank() } ?: "mp4",
                     rating = o.str("rating")?.takeIf { it.isNotBlank() && it != "0" },
+                    added = o.str("added")?.toLongOrNull() ?: 0L,
                 )
             }
         }
@@ -118,6 +119,7 @@ class XtreamApi(private val c: Credentials) {
                     categoryId = o.str("category_id") ?: categoryId ?: "",
                     plot = o.str("plot"),
                     rating = o.str("rating")?.takeIf { it.isNotBlank() && it != "0" },
+                    lastModified = o.str("last_modified")?.toLongOrNull() ?: 0L,
                 )
             }
         }
@@ -135,6 +137,23 @@ class XtreamApi(private val c: Credentials) {
             duration = info.optString("duration"),
             cast = info.optString("cast").ifBlank { info.optString("actors") },
             director = info.optString("director"),
+            backdrop = backdropOf(info),
+        )
+    }
+
+    /** Panels send either `backdrop` (string) or `backdrop_path` (array of urls). */
+    private fun backdropOf(info: JSONObject): String? =
+        info.optString("backdrop").ifBlank { info.optJSONArray("backdrop_path")?.optString(0) ?: "" }
+            .takeIf { it.startsWith("http") }
+
+    /** Subscription details; throws on network errors, returns null on an unexpected response. */
+    suspend fun accountInfo(): AccountInfo? {
+        val user = runCatching { JSONObject(getText(emptyMap())).optJSONObject("user_info") }.getOrNull() ?: return null
+        return AccountInfo(
+            status = user.optString("status"),
+            expiresAt = user.optString("exp_date").toLongOrNull()?.takeIf { it > 0 },
+            maxConnections = user.optString("max_connections").toIntOrNull(),
+            isTrial = user.optString("is_trial") == "1",
         )
     }
 
@@ -171,7 +190,15 @@ class XtreamApi(private val c: Credentials) {
                 )
             }.sortedBy { it.episodeNum }
         }
-        return SeriesInfo(info.optString("plot"), info.optString("genre"), seasons)
+        return SeriesInfo(
+            plot = info.optString("plot").ifBlank { info.optString("description") },
+            genre = info.optString("genre"),
+            releaseDate = info.optString("releaseDate").ifBlank { info.optString("releasedate") }.ifBlank { info.optString("release_date") },
+            cast = info.optString("cast").ifBlank { info.optString("actors") },
+            director = info.optString("director"),
+            backdrop = backdropOf(info),
+            seasons = seasons,
+        )
     }
 
     /** Short EPG (current + upcoming) for one channel. Titles are base64-encoded by the API. */

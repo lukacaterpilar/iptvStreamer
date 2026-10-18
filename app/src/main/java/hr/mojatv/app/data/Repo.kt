@@ -72,6 +72,9 @@ object Repo {
     fun nextProgramme(streamId: Int, nowSec: Long = System.currentTimeMillis() / 1000): Programme? =
         epg[streamId]?.firstOrNull { it.start >= nowSec }
 
+    /** Subscription details, fetched once per session by the settings screen. */
+    var account: AccountInfo? = null
+
     // --- VOD / series ---
     var vodCategories: List<Category>? = null
     var seriesCategories: List<Category>? = null
@@ -104,5 +107,6 @@ object Repo {
         vodCategories = null; seriesCategories = null
         movies.clear(); series.clear()
         allMovies = null; allSeries = null
+        account = null
     }
 }

@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -99,13 +100,22 @@ fun LoginScreen(prefs: Prefs, addMode: Boolean = false, onCancel: () -> Unit = {
         ) {
             Text(prefs.appName, fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color(prefs.appColor))
             Text(S.loginSubtitle, color = C.dim)
-            RemoteTextField(value = name, onValueChange = { name = it }, label = S.profileNameLabel, modifier = Modifier.fillMaxWidth())
+            RemoteTextField(
+                value = name, onValueChange = { name = it }, label = S.profileNameLabel,
+                modifier = Modifier.fillMaxWidth(), imeAction = ImeAction.Next,
+            )
             RemoteTextField(
                 value = server, onValueChange = { server = it }, label = S.loginServer,
-                modifier = Modifier.fillMaxWidth().focusRequester(serverFocus),
+                modifier = Modifier.fillMaxWidth().focusRequester(serverFocus), imeAction = ImeAction.Next,
             )
-            RemoteTextField(value = user, onValueChange = { user = it }, label = S.loginUser, modifier = Modifier.fillMaxWidth())
-            RemoteTextField(value = pass, onValueChange = { pass = it }, label = S.loginPass, modifier = Modifier.fillMaxWidth(), password = true)
+            RemoteTextField(
+                value = user, onValueChange = { user = it }, label = S.loginUser,
+                modifier = Modifier.fillMaxWidth(), imeAction = ImeAction.Next,
+            )
+            RemoteTextField(
+                value = pass, onValueChange = { pass = it }, label = S.loginPass,
+                modifier = Modifier.fillMaxWidth(), password = true, imeAction = ImeAction.Done,
+            )
             error?.let { Text(it, color = Color(0xFFFF8A80)) }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 FocusBox(onClick = ::submit, color = C.accent, modifier = Modifier.weight(1f)) {

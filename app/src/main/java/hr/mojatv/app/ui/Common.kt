@@ -151,6 +151,9 @@ fun ErrorText(text: String) {
 private val hm = SimpleDateFormat("HH:mm", Locale.getDefault())
 fun hhmm(epochSec: Long): String = hm.format(Date(epochSec * 1000))
 
+private val dmyFmt = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault())
+fun dmy(epochSec: Long): String = dmyFmt.format(Date(epochSec * 1000))
+
 fun formatMs(ms: Long): String {
     val s = ms / 1000
     return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)

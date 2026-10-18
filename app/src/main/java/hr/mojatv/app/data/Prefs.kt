@@ -124,6 +124,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("refresh_daily", true)
         set(v) = sp.edit().putBoolean("refresh_daily", v).apply()
 
+    /** true = look for a new app version on GitHub at start and every few hours, download it and offer to install. */
+    var autoUpdate: Boolean
+        get() = sp.getBoolean("auto_update", true)
+        set(v) = sp.edit().putBoolean("auto_update", v).apply()
+
     var lastRefresh: Long
         get() = sp.getLong("last_refresh", 0L)
         set(v) = sp.edit().putLong("last_refresh", v).apply()

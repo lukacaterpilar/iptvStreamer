@@ -31,6 +31,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -38,8 +39,11 @@ import androidx.compose.ui.unit.sp
 import hr.mojatv.app.data.Prefs
 import hr.mojatv.app.data.Repo
 import hr.mojatv.app.data.TITLE_COLORS
+import hr.mojatv.app.data.Updater
 import hr.mojatv.app.player.PlayerActivity
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 
 enum class Tab { LIVE, GUIDE, MOVIES, SERIES, SETTINGS, REFRESH }
 
@@ -89,6 +93,7 @@ fun HomeScreen(prefs: Prefs, autoPlayLast: Boolean, onProfileChanged: () -> Unit
     LaunchedEffect(message) {
         if (message != null) { delay(3500); message = null }
     }
+    AutoUpdateChecker(prefs)
 
     // Resume the last watched channel on a fresh start (also right after boot, so retry while the network comes up).
     LaunchedEffect(Unit) {
@@ -179,6 +184,7 @@ fun HomeScreen(prefs: Prefs, autoPlayLast: Boolean, onProfileChanged: () -> Unit
             )
         }
         RemoteInputOverlay(Modifier.align(Alignment.TopEnd).padding(top = 104.dp, end = 24.dp))
+        UpdatePrompt(Modifier.align(Alignment.BottomCenter).padding(bottom = if (message != null) 72.dp else 24.dp))
     }
 }
 
@@ -210,15 +216,34 @@ fun SettingsScreen(
     var resume by remember { mutableStateOf(prefs.resumeLastChannel) }
     var format by remember { mutableStateOf(prefs.liveFormat) }
     var refreshDaily by remember { mutableStateOf(prefs.refreshDaily) }
+    var autoUpdate by remember { mutableStateOf(prefs.autoUpdate) }
+    var account by remember { mutableStateOf(Repo.account) }
+    var accountFailed by remember { mutableStateOf(false) }
+    var accountVersion by remember { mutableIntStateOf(0) }
+    LaunchedEffect(accountVersion) {
+        if (account != null && accountVersion == 0) return@LaunchedEffect
+        accountFailed = false
+        val a = runCatching { Repo.api?.accountInfo() }.getOrNull()
+        if (a != null) { Repo.account = a; account = a } else accountFailed = true
+    }
+    val scope = rememberCoroutineScope()
     var editingName by remember { mutableStateOf(false) }
     var profilesVersion by remember { mutableIntStateOf(0) }
     var confirmDeleteId by remember { mutableStateOf<Int?>(null) }
     val nameFocus = remember { FocusRequester() }
+    val nameRowFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
     val profiles = remember(profilesVersion) { prefs.profiles }
     val colorIdx = TITLE_COLORS.indexOf(appColor)
     val colorName = s.colorNames.getOrNull(colorIdx) ?: "#%06X".format(appColor and 0xFFFFFF)
 
     LaunchedEffect(editingName) { if (editingName) runCatching { nameFocus.requestFocus() } }
+    fun finishNameEdit() {
+        keyboard?.hide()
+        editingName = false
+        runCatching { nameRowFocus.requestFocus() }
+    }
+    BackHandler(enabled = editingName) { finishNameEdit() }
     LaunchedEffect(confirmDeleteId) { if (confirmDeleteId != null) { delay(5000); confirmDeleteId = null } }
 
     LazyColumn(
@@ -237,11 +262,16 @@ fun SettingsScreen(
                 prefs.language = next.code
             }
         }
-        item { SettingRow(s.appName, appName) { editingName = !editingName } }
+        item {
+            SettingRow(s.appName, appName, modifier = Modifier.focusRequester(nameRowFocus)) {
+                if (editingName) finishNameEdit() else editingName = true
+            }
+        }
         if (editingName) item {
             RemoteTextField(
                 value = appName, onValueChange = onAppName, label = s.appName,
                 modifier = Modifier.width(720.dp).focusRequester(nameFocus),
+                onImeAction = ::finishNameEdit,
             )
         }
         item {
@@ -281,6 +311,54 @@ fun SettingsScreen(
                 refreshDaily = !refreshDaily; prefs.refreshDaily = refreshDaily
             }
         }
+
+        item { SectionTitle(s.secAccount) }
+        item {
+            val a = account
+            val now = System.currentTimeMillis() / 1000
+            val daysLeft = a?.expiresAt?.let { ((it - now) / 86_400).toInt() }
+            val expired = a != null && (a.expiresAt?.let { it < now } == true || !a.status.equals("Active", ignoreCase = true))
+            val value = when {
+                a == null -> if (accountFailed) s.subscriptionUnknown else "…"
+                expired -> s.subscriptionExpired + (a.status.takeIf { it.isNotBlank() && !it.equals("Active", true) }?.let { " ($it)" } ?: "")
+                a.expiresAt == null -> a.status.ifBlank { s.subscriptionUnknown }
+                else -> s.subscriptionUntil(dmy(a.expiresAt), daysLeft ?: 0)
+            }
+            SettingRow(
+                s.subscription, value,
+                valueColor = when {
+                    expired || (daysLeft != null && daysLeft < 7) -> Color(0xFFFF5252)
+                    a == null -> C.dim
+                    else -> C.fav
+                },
+            ) { accountVersion++ }
+        }
+        account?.maxConnections?.let { n -> item { Text(s.maxConnections(n), color = C.dim, fontSize = 12.sp) } }
+
+        item { SectionTitle(s.secUpdate) }
+        item {
+            SettingRow(s.autoUpdate, if (autoUpdate) s.on else s.off) {
+                autoUpdate = !autoUpdate; prefs.autoUpdate = autoUpdate
+            }
+        }
+        item {
+            val state = Updater.state
+            SettingRow(
+                s.updCheck(Updater.currentVersion), state.label(s),
+                valueColor = when (state) {
+                    is Updater.State.Ready -> C.fav
+                    is Updater.State.Error -> Color(0xFFFF8A80)
+                    else -> C.accent
+                },
+            ) {
+                when (state) {
+                    is Updater.State.Ready -> installUpdate(ctx, state)
+                    Updater.State.Checking, is Updater.State.Downloading -> {}
+                    else -> scope.launch { Updater.checkAndDownload(ctx.applicationContext) }
+                }
+            }
+        }
+        item { Text(s.updNote, color = C.dim, fontSize = 12.sp) }
 
         item { SectionTitle(s.secProfiles) }
         items(profiles.size, key = { profiles[it].id }) { i ->
@@ -332,10 +410,11 @@ private fun SettingRow(
     title: String,
     value: String,
     valueColor: Color = C.accent,
+    modifier: Modifier = Modifier,
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
-    FocusBox(onClick = onClick, onLongClick = onLongClick, modifier = Modifier.width(720.dp), color = C.panel) {
+    FocusBox(onClick = onClick, onLongClick = onLongClick, modifier = modifier.width(720.dp), color = C.panel) {
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.weight(1f), color = C.text, fontSize = 16.sp)
             Text(value, color = valueColor, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)

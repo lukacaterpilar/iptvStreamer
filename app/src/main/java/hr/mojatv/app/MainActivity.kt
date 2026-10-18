@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import hr.mojatv.app.data.Prefs
 import hr.mojatv.app.data.RemoteInputServer
 import hr.mojatv.app.data.Repo
+import hr.mojatv.app.data.Updater
 import hr.mojatv.app.ui.AppTheme
 import hr.mojatv.app.ui.HomeScreen
 import hr.mojatv.app.ui.L10n
@@ -32,6 +33,7 @@ class MainActivity : ComponentActivity() {
         L10n.lang = Lang.fromCode(prefs.language)
         AppTheme.background = prefs.background
         prefs.credentials?.let(Repo::init)
+        if (savedInstanceState == null) Updater.cleanup(this)
         // Auto-play the last channel only on a fresh start, not after rotation/process restore.
         val autoPlay = savedInstanceState == null && prefs.resumeLastChannel
 

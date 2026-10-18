@@ -18,7 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -35,13 +35,24 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -61,17 +72,21 @@ import hr.mojatv.app.data.Series
 import hr.mojatv.app.data.SeriesInfo
 import hr.mojatv.app.player.PlayerActivity
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 const val CAT_SEARCH = "__search"
 const val CAT_CONTINUE = "__continue"
+const val CAT_NEW = "__new"
+private const val NEW_LIMIT = 300
 
 private val WATCHED_BG = Color(0xFF1B5E3B)
 private val FAV_PINK = Color(0xFFFF5CA8)
 
-private fun vodCategories(cats: List<Category>) = listOf(
+private fun vodCategories(cats: List<Category>, newLabel: String) = listOf(
     Category(CAT_SEARCH, S.search),
     Category(CAT_CONTINUE, S.continueWatching),
     Category(CAT_FAV, S.favorites),
+    Category(CAT_NEW, newLabel),
 ) + cats
 
 /** How a movie or series is displayed in the shared browser. */
@@ -82,10 +97,13 @@ private class VodSpec<T : Any>(
     val name: (T) -> String,
     val poster: (T) -> String?,
     val rating: (T) -> String?,
+    /** Label and sort key (epoch seconds, newest first) of the "Newly added" / "Recently updated" category. */
+    val newLabel: () -> String,
+    val newKey: (T) -> Long,
 )
 
-private val MOVIE_SPEC = VodSpec<Movie>("movie", { S.moviesWord }, { it.streamId }, { it.name }, { it.poster }, { it.rating })
-private val SERIES_SPEC = VodSpec<Series>("series", { S.seriesWord }, { it.seriesId }, { it.name }, { it.cover }, { it.rating })
+private val MOVIE_SPEC = VodSpec<Movie>("movie", { S.moviesWord }, { it.streamId }, { it.name }, { it.poster }, { it.rating }, { S.newlyAdded }, { it.added })
+private val SERIES_SPEC = VodSpec<Series>("series", { S.seriesWord }, { it.seriesId }, { it.name }, { it.cover }, { it.rating }, { S.recentlyUpdated }, { it.lastModified })
 
 /** Loads a category list once and remembers it in [Repo]. */
 @Composable
@@ -167,6 +185,18 @@ private fun <T : Any> VodBrowser(
     val gridState = rememberLazyGridState()
     val restoreFocus = remember { FocusRequester() }
 
+    // Search box. The text field itself only takes focus after OK on the box: Fire TV opens its keyboard as soon
+    // as a text field is focused and throws focus around when it closes, so the box is the d-pad target and
+    // Back / down / the keyboard's Search button all hand the cursor to the first result.
+    val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val searchBoxFocus = remember { FocusRequester() }
+    val searchFieldFocus = remember { FocusRequester() }
+    val firstResultFocus = remember { FocusRequester() }
+    var editing by remember { mutableStateOf(false) }
+    var leavingSearch by remember { mutableStateOf(false) }
+
     LifecycleResumeEffect(Unit) {
         resumeVersion++
         onPauseOrDispose { }
@@ -178,7 +208,7 @@ private fun <T : Any> VodBrowser(
     }
     if (error != null) { ErrorText(S.errorLoading(error)); return }
     val cats = categories ?: run { Loading(); return }
-    val allCats = remember(cats, L10n.lang) { vodCategories(cats) }
+    val allCats = remember(cats, L10n.lang) { vodCategories(cats, spec.newLabel()) }
     val current = selectedCat ?: cats.firstOrNull()?.id ?: CAT_SEARCH
 
     // Synthetic categories depend on favourites / playback progress, so reload them when those change.
@@ -201,6 +231,7 @@ private fun <T : Any> VodBrowser(
                     val f = favorites()
                     loadAll().filter { spec.id(it) in f }
                 }
+                CAT_NEW -> loadAll().filter { spec.newKey(it) > 0 }.sortedByDescending(spec.newKey).take(NEW_LIMIT)
                 else -> loadCategory(current)
             }
         }.onSuccess { list = it }.onFailure { listError = it.message ?: it.javaClass.simpleName }
@@ -213,6 +244,32 @@ private fun <T : Any> VodBrowser(
         else l.filter { spec.name(it).contains(query.trim(), ignoreCase = true) }.take(400)
     }
     val favs = remember(favVersion) { favorites() }
+
+    fun leaveSearch() {
+        leavingSearch = true
+        keyboard?.hide()
+        scope.launch {
+            val moved = runCatching {
+                if (shown.isNullOrEmpty()) {
+                    searchBoxFocus.requestFocus()
+                } else {
+                    gridState.scrollToItem(0)
+                    delay(30)
+                    firstResultFocus.requestFocus()
+                }
+            }.isSuccess
+            if (!moved) focusManager.clearFocus()
+            leavingSearch = false
+        }
+    }
+    BackHandler(enabled = editing) { leaveSearch() }
+    LaunchedEffect(editing) {
+        if (editing) {
+            delay(30) // let canFocus = true reach the focus system first
+            runCatching { searchFieldFocus.requestFocus() }
+            keyboard?.show()
+        }
+    }
 
     // Put the cursor back on the poster the user came from.
     LaunchedEffect(pendingRestore, shown) {
@@ -230,11 +287,33 @@ private fun <T : Any> VodBrowser(
         CategoryColumn(allCats, current) { selectedCat = it }
         Column(Modifier.weight(1f).fillMaxHeight()) {
             if (current == CAT_SEARCH) {
-                RemoteTextField(
-                    value = query, onValueChange = { query = it }, label = S.searchLabel(spec.label()),
+                FocusBox(
+                    onClick = { editing = true },
                     // Leaves room on the right for the phone-keyboard QR panel.
-                    modifier = Modifier.fillMaxWidth(0.68f).padding(horizontal = 18.dp, vertical = 8.dp),
-                )
+                    modifier = Modifier.fillMaxWidth(0.68f).padding(horizontal = 12.dp, vertical = 8.dp)
+                        .focusRequester(searchBoxFocus),
+                    color = Color.Transparent,
+                ) {
+                    RemoteTextField(
+                        value = query, onValueChange = { query = it }, label = S.searchLabel(spec.label()),
+                        modifier = Modifier.fillMaxWidth().padding(6.dp)
+                            .focusRequester(searchFieldFocus)
+                            .focusProperties { canFocus = editing }
+                            .onFocusChanged {
+                                if (!it.isFocused && editing) {
+                                    editing = false
+                                    // The keyboard closing must not strand the cursor somewhere random.
+                                    if (!leavingSearch) runCatching { searchBoxFocus.requestFocus() }
+                                }
+                            }
+                            .onPreviewKeyEvent { e ->
+                                if (editing && e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown) {
+                                    leaveSearch(); true
+                                } else false
+                            },
+                        imeAction = ImeAction.Search, onImeAction = { leaveSearch() },
+                    )
+                }
             }
             Box(Modifier.weight(1f)) {
                 when {
@@ -245,6 +324,7 @@ private fun <T : Any> VodBrowser(
                             CAT_SEARCH -> if (query.isBlank()) S.searchHint else S.noResults(query)
                             CAT_CONTINUE -> S.continueEmpty(spec.label())
                             CAT_FAV -> S.noFavoriteVod
+                            CAT_NEW -> S.newEmpty
                             else -> S.emptyCategory
                         },
                         Modifier.padding(24.dp), color = C.dim,
@@ -255,13 +335,14 @@ private fun <T : Any> VodBrowser(
                         contentPadding = PaddingValues(12.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
-                        items(shown, key = { spec.id(it) }) { item ->
+                        itemsIndexed(shown, key = { _, it -> spec.id(it) }) { index, item ->
                             val id = spec.id(item)
                             PosterCard(
                                 title = spec.name(item), image = spec.poster(item), rating = spec.rating(item),
                                 isFav = id in favs,
                                 modifier = Modifier.fillMaxWidth()
-                                    .then(if (id == lastFocusedId) Modifier.focusRequester(restoreFocus) else Modifier),
+                                    .then(if (id == lastFocusedId) Modifier.focusRequester(restoreFocus) else Modifier)
+                                    .then(if (index == 0) Modifier.focusRequester(firstResultFocus) else Modifier),
                                 onFocus = { lastFocusedId = id },
                                 onLongClick = {
                                     val added = toggleFav(id)
@@ -313,6 +394,8 @@ private fun MovieDetail(m: Movie, prefs: Prefs, favVersion: Int, onFavToggled: (
 
     fun start(from: Long) = ctx.startActivity(PlayerActivity.vodIntent(ctx, api.movieUrl(m), m.name, key, from))
 
+    Box(Modifier.fillMaxSize()) {
+    Backdrop(info?.backdrop)
     Row(Modifier.fillMaxSize().padding(32.dp), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
         AsyncImage(
             model = m.poster, contentDescription = null, contentScale = ContentScale.Crop,
@@ -343,6 +426,31 @@ private fun MovieDetail(m: Movie, prefs: Prefs, favVersion: Int, onFavToggled: (
             )
             info?.cast?.takeIf { it.isNotBlank() }?.let { Text(S.cast(it), color = C.dim, fontSize = 13.sp, maxLines = 2) }
             info?.director?.takeIf { it.isNotBlank() }?.let { Text(S.director(it), color = C.dim, fontSize = 13.sp) }
+        }
+    }
+    }
+}
+
+/** Wide provider artwork behind a detail page, faded so the text stays readable. Draws nothing without a url. */
+@Composable
+private fun Backdrop(url: String?) {
+    if (url == null) return
+    AsyncImage(
+        model = url, contentDescription = null, contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxSize(), alpha = 0.22f,
+    )
+}
+
+/** Full-screen description, opened with OK on the truncated text. Back or OK closes it. */
+@Composable
+private fun PlotOverlay(title: String, plot: String, onClose: () -> Unit) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    FocusBox(onClick = onClose, modifier = Modifier.fillMaxSize().focusRequester(focus), color = Color.Transparent, focusedColor = Color.Transparent) {
+        Column(Modifier.fillMaxSize().padding(48.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(title, color = C.text, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            Text(plot, Modifier.weight(1f).verticalScroll(rememberScrollState()), color = C.text, fontSize = 18.sp, lineHeight = 26.sp)
+            Text(S.closeHint, color = C.dim, fontSize = 13.sp)
         }
     }
 }
@@ -391,22 +499,63 @@ private fun SeriesDetail(s: Series, prefs: Prefs, favVersion: Int, onFavToggled:
         )
     }
 
+    val seriesPlot = (info?.plot?.takeIf { it.isNotBlank() } ?: s.plot ?: "").trim()
+    // While an episode is highlighted its own description replaces the series one (if the provider has it).
+    var focusedEpisode by remember { mutableStateOf<Episode?>(null) }
+    val episodePlot = focusedEpisode?.plot?.trim()?.takeIf { it.isNotEmpty() }
+    val plotTitle = focusedEpisode?.takeIf { episodePlot != null }?.let {
+        val code = "S%02dE%02d".format(it.season, it.episodeNum)
+        val title = it.title.ifBlank { S.episode(it.episodeNum) }
+        if (title.contains(code, ignoreCase = true)) title else "$code · $title"
+    }
+    val plot = episodePlot ?: seriesPlot
+    var showPlot by remember { mutableStateOf(false) }
+    if (showPlot) {
+        BackHandler { showPlot = false }
+        PlotOverlay(plotTitle ?: s.name, plot) { showPlot = false }
+        return
+    }
+
+    Box(Modifier.fillMaxSize()) {
+    Backdrop(info?.backdrop)
     Row(Modifier.fillMaxSize().padding(24.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-        Column(Modifier.width(280.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            AsyncImage(
-                model = s.cover, contentDescription = null, contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(8.dp)).background(C.cell),
-            )
-            Text(s.name, color = C.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            info?.genre?.takeIf { it.isNotBlank() }?.let { Text(it, color = C.dim, fontSize = 13.sp) }
-            PrimaryButton(
-                if (isFav) S.removeFav else S.addFav,
-                color = if (isFav) FAV_PINK else C.cell,
-            ) { prefs.toggleSeriesFavorite(s.seriesId); onFavToggled() }
-            Text(
-                info?.plot ?: s.plot ?: "", color = C.dim, fontSize = 13.sp,
-                modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
-            )
+        // The TV is only ~540dp tall, so the cover stays small and the text sits beside / below it.
+        Column(Modifier.width(400.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                AsyncImage(
+                    model = s.cover, contentDescription = null, contentScale = ContentScale.Crop,
+                    modifier = Modifier.width(150.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(8.dp)).background(C.cell),
+                )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(s.name, color = C.text, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    val meta = listOfNotNull(info?.releaseDate?.take(4), info?.genre, s.rating?.let { "★ $it" })
+                        .filter { it.isNotBlank() }
+                    if (meta.isNotEmpty()) Text(meta.joinToString("  •  "), color = C.dim, fontSize = 13.sp, maxLines = 3)
+                    PrimaryButton(
+                        if (isFav) S.removeFav else S.addFav,
+                        color = if (isFav) FAV_PINK else C.cell,
+                    ) { prefs.toggleSeriesFavorite(s.seriesId); onFavToggled() }
+                }
+            }
+            if (plot.isNotEmpty()) {
+                // OK opens the full text; the preview is just what fits.
+                FocusBox(onClick = { showPlot = true }, modifier = Modifier.weight(1f, fill = false), color = Color.Transparent) {
+                    Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        // Episode still from the provider, only while an episode's description is shown.
+                        val still = focusedEpisode?.image?.takeIf { plotTitle != null }
+                        if (still != null) AsyncImage(
+                            model = still, contentDescription = null, contentScale = ContentScale.Crop,
+                            modifier = Modifier.width(130.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(6.dp)).background(C.cell),
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (plotTitle != null) Text(plotTitle, color = C.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(plot, color = C.text, fontSize = 14.sp, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+            info?.cast?.takeIf { it.isNotBlank() }?.let { Text(S.cast(it), color = C.dim, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+            info?.director?.takeIf { it.isNotBlank() }?.let { Text(S.director(it), color = C.dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
         Column(Modifier.weight(1f)) {
             if (error != null) { ErrorText(error!!); return@Column }
@@ -451,6 +600,7 @@ private fun SeriesDetail(s: Series, prefs: Prefs, favVersion: Int, onFavToggled:
                     FocusBox(
                         onClick = { play(e, pos) },
                         onLongClick = { play(e, 0) },
+                        onFocus = { focusedEpisode = e },
                         modifier = Modifier.fillMaxWidth()
                             .then(if (i == focusIdx) Modifier.focusRequester(episodeFocus) else Modifier),
                         color = if (watched) WATCHED_BG else C.panel,
@@ -475,5 +625,6 @@ private fun SeriesDetail(s: Series, prefs: Prefs, favVersion: Int, onFavToggled:
                 }
             }
         }
+    }
     }
 }

@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActionScope
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,10 +24,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -46,8 +53,26 @@ fun RemoteTextField(
     label: String,
     modifier: Modifier = Modifier,
     password: Boolean = false,
+    /**
+     * Done (default) closes the keyboard, Next closes it and moves to the next field (which opens it again),
+     * Search is reported to the keyboard as such. Fire TV's keyboard swallows the Back button on fields that
+     * advertise Next or the default "form" action, so Next is advertised to the keyboard as Done and the move
+     * to the next field is done by the app.
+     */
+    imeAction: ImeAction = ImeAction.Done,
+    /** Called after the keyboard was hidden when its action button (e.g. "Search") is pressed. */
+    onImeAction: (() -> Unit)? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val act: KeyboardActionScope.() -> Unit = {
+        keyboard?.hide()
+        when {
+            onImeAction != null -> onImeAction()
+            imeAction == ImeAction.Next -> focusManager.moveFocus(FocusDirection.Next)
+        }
+    }
     DisposableEffect(focused, label) {
         if (focused) RemoteInput.activeLabel = label
         onDispose { if (RemoteInput.activeLabel == label) RemoteInput.activeLabel = null }
@@ -61,6 +86,12 @@ fun RemoteTextField(
         label = { Text(label) },
         modifier = modifier.onFocusChanged { focused = it.isFocused },
         visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
+        keyboardOptions = KeyboardOptions(imeAction = if (imeAction == ImeAction.Next) ImeAction.Done else imeAction),
+        keyboardActions = KeyboardActions(
+            onDone = act, onGo = act, onSearch = act, onSend = act, onNext = act,
+            // Fire TV's keyboard reports its Back button as "previous": just close the keyboard.
+            onPrevious = { keyboard?.hide(); onImeAction?.invoke() },
+        ),
     )
 }
 
