@@ -50,18 +50,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.C as MediaC
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import hr.mojatv.app.data.Diagnostics
 import hr.mojatv.app.data.Prefs
 import hr.mojatv.app.data.Repo
-import hr.mojatv.app.data.httpClient
+import hr.mojatv.app.data.streamHttpClient
 import hr.mojatv.app.ui.C
 import hr.mojatv.app.ui.FocusBox
 import hr.mojatv.app.ui.MojaTheme
@@ -89,6 +93,14 @@ class PlayerActivity : ComponentActivity() {
         private const val EXTRA_START_MS = "start_ms"
         private const val OVERLAY_MS = 5000L
         private const val MAX_RETRIES = 5
+        private const val WATCHDOG_MS = 2000L
+        /** Live picture not advancing while "playing" for this long = silent stall; reconnect like a zap. */
+        private const val STALL_MS = 8000L
+        private const val MAX_BUFFERING_MS = 15_000L
+        // Cushion for live TS: play slightly slower until this much is buffered, so dropouts are bridged.
+        private const val CUSHION_LOW_MS = 10_000L
+        private const val CUSHION_HIGH_MS = 12_000L
+        private const val CUSHION_SPEED = 0.97f
 
         fun liveIntent(ctx: Context, streamId: Int): Intent =
             Intent(ctx, PlayerActivity::class.java).putExtra(EXTRA_MODE, "live").putExtra(EXTRA_STREAM_ID, streamId)
@@ -100,8 +112,11 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private lateinit var prefs: Prefs
+    private lateinit var diag: Diagnostics
     private var player: ExoPlayer? = null
     private val isLive by lazy { intent.getStringExtra(EXTRA_MODE) == "live" }
+    /** Live TS (unlike HLS) is one endless HTTP response, so it gets the reconnecting source and the cushion. */
+    private val isLiveTs by lazy { isLive && prefs.liveFormat == "ts" }
     private val playlist get() = Repo.playlist
 
     private var index by mutableIntStateOf(-1)
@@ -115,7 +130,20 @@ class PlayerActivity : ComponentActivity() {
     private var retries = 0
     private val handler = Handler(Looper.getMainLooper())
     private val hideOverlay = Runnable { overlay = false }
-    private val retry = Runnable { player?.prepare(); player?.play() }
+    private val retry = Runnable { reconnect() }
+
+    // Stall watchdog: some IPTV streams stop delivering frames (or close the connection) without an error,
+    // which leaves a frozen picture until the user zaps away and back. Detect that and reload the stream.
+    private var lastProgress = -1L
+    private var progressAt = 0L
+    private var bufferingSince = 0L
+    private val watchdog = object : Runnable {
+        override fun run() {
+            checkStall()
+            updateCushion()
+            handler.postDelayed(this, WATCHDOG_MS)
+        }
+    }
     private val commitDigits = Runnable {
         val num = digits.toIntOrNull()
         digits = ""
@@ -126,20 +154,28 @@ class PlayerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        diag = Diagnostics(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Repo.api == null) { finish(); return }
 
+        val http = OkHttpDataSource.Factory(streamHttpClient)
+        val dataSource =
+            if (isLiveTs) ReconnectingDataSource.Factory(http) { diag.record(Diagnostics.Event.SEAMLESS) } else http
         val p = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(
-                DefaultMediaSourceFactory(this).setDataSourceFactory(OkHttpDataSource.Factory(httpClient))
-            )
+            .setRenderersFactory(DefaultRenderersFactory(this).setEnableDecoderFallback(true))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(dataSource))
+            .setWakeMode(MediaC.WAKE_MODE_NETWORK) // keeps Wi-Fi out of power save while streaming
             .build()
         player = p
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 buffering = state == Player.STATE_BUFFERING
+                bufferingSince = if (buffering) System.currentTimeMillis() else 0L
                 if (state == Player.STATE_READY) { retries = 0; error = null }
-                if (state == Player.STATE_ENDED && !isLive) finish()
+                if (state == Player.STATE_ENDED) {
+                    // A live stream never really ends: the server dropped the connection, so reconnect.
+                    if (isLive) { diag.record(Diagnostics.Event.ENDED); handler.postDelayed(retry, 500) } else finish()
+                }
             }
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -147,10 +183,12 @@ class PlayerActivity : ComponentActivity() {
             }
 
             override fun onPlayerError(e: PlaybackException) {
+                if (isLive) diag.record(Diagnostics.Event.ERROR, e.errorCodeName)
                 if (isLive && retries < MAX_RETRIES) {
                     retries++
                     error = S.reconnecting(retries, MAX_RETRIES)
-                    handler.postDelayed(retry, 3000)
+                    handler.removeCallbacks(retry)
+                    handler.postDelayed(retry, 2000)
                 } else {
                     error = S.playbackError(e.errorCodeName)
                 }
@@ -162,6 +200,7 @@ class PlayerActivity : ComponentActivity() {
             val i = playlist.indexOfFirst { it.streamId == id }
             if (i < 0) { finish(); return }
             play(i)
+            handler.postDelayed(watchdog, WATCHDOG_MS)
         } else {
             p.setMediaItem(MediaItem.fromUri(intent.getStringExtra(EXTRA_URL)!!))
             p.prepare()
@@ -186,8 +225,73 @@ class PlayerActivity : ComponentActivity() {
         p.prepare()
         p.play()
         prefs.lastChannelId = ch.streamId
+        resetStall()
         lifecycleScope.launch { Repo.loadEpg(ch.streamId) }
         showOverlay()
+    }
+
+    /** Reloads the current stream from scratch — the same thing that happens when zapping away and back. */
+    private fun reconnect() {
+        val p = player ?: return
+        handler.removeCallbacks(retry)
+        if (isLive) {
+            val ch = playlist.getOrNull(index) ?: return
+            p.stop()
+            p.setMediaItem(MediaItem.fromUri(Repo.api!!.liveUrl(ch.streamId, prefs.liveFormat)))
+        }
+        p.prepare()
+        p.play()
+        resetStall()
+    }
+
+    private fun resetStall() {
+        lastProgress = -1L
+        progressAt = System.currentTimeMillis()
+    }
+
+    private fun checkStall() {
+        val p = player ?: return
+        val now = System.currentTimeMillis()
+        if (!p.playWhenReady || error != null) { resetStall(); return }
+        when (p.playbackState) {
+            Player.STATE_BUFFERING -> {
+                if (bufferingSince > 0 && now - bufferingSince > MAX_BUFFERING_MS) {
+                    bufferingSince = now
+                    diag.record(Diagnostics.Event.BUFFERING)
+                    reconnect()
+                }
+            }
+            Player.STATE_READY -> {
+                // Rendered video frames catch a frozen picture even when audio (and the clock) keeps going;
+                // fall back to the playback position for audio-only channels.
+                val frames = p.videoDecoderCounters?.let { it.ensureUpdated(); it.renderedOutputBufferCount.toLong() }
+                val progress = frames ?: p.currentPosition
+                if (progress != lastProgress) {
+                    lastProgress = progress
+                    progressAt = now
+                } else if (now - progressAt > STALL_MS) {
+                    diag.record(Diagnostics.Event.FROZEN)
+                    reconnect()
+                }
+            }
+            else -> resetStall()
+        }
+    }
+
+    /**
+     * Live TS arrives at real-time speed, so the buffer never grows by itself. Playing 3% slower (pitch kept)
+     * builds a cushion over a few minutes that the reconnecting source plays from while it reconnects.
+     */
+    private fun updateCushion() {
+        val p = player ?: return
+        if (!isLiveTs || p.playbackState != Player.STATE_READY) return
+        val buffered = p.totalBufferedDuration
+        val speed = when {
+            buffered < CUSHION_LOW_MS -> CUSHION_SPEED
+            buffered > CUSHION_HIGH_MS -> 1f
+            else -> return
+        }
+        if (p.playbackParameters.speed != speed) p.playbackParameters = PlaybackParameters(speed)
     }
 
     private fun showOverlay() {

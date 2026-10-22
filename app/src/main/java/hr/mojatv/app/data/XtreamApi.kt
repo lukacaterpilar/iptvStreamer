@@ -30,6 +30,15 @@ val httpClient: OkHttpClient = OkHttpClient.Builder()
     }
     .build()
 
+/**
+ * Client for media streams. A live stream that stops sending data must fail fast so it can be reconnected
+ * while the player still has buffer left, instead of sitting on a frozen picture until the 60 s API timeout.
+ */
+val streamHttpClient: OkHttpClient = httpClient.newBuilder()
+    .readTimeout(8, TimeUnit.SECONDS)
+    .retryOnConnectionFailure(true)
+    .build()
+
 /** Client for the Xtream Codes `player_api.php` API. */
 class XtreamApi(private val c: Credentials) {
 

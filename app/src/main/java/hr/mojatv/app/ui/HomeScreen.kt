@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import hr.mojatv.app.data.Diagnostics
 import hr.mojatv.app.data.Prefs
 import hr.mojatv.app.data.Repo
 import hr.mojatv.app.data.TITLE_COLORS
@@ -217,6 +218,9 @@ fun SettingsScreen(
     var format by remember { mutableStateOf(prefs.liveFormat) }
     var refreshDaily by remember { mutableStateOf(prefs.refreshDaily) }
     var autoUpdate by remember { mutableStateOf(prefs.autoUpdate) }
+    val diag = remember { Diagnostics(ctx) }
+    var diagVersion by remember { mutableIntStateOf(0) }
+    val diagStats = remember(diagVersion) { diag.snapshot() }
     var account by remember { mutableStateOf(Repo.account) }
     var accountFailed by remember { mutableStateOf(false) }
     var accountVersion by remember { mutableIntStateOf(0) }
@@ -303,6 +307,20 @@ fun SettingsScreen(
             SettingRow(s.liveFormat, format.uppercase()) {
                 format = if (format == "ts") "m3u8" else "ts"; prefs.liveFormat = format
             }
+        }
+        item {
+            SettingRow(
+                s.diagnostics, s.diagSummary(diagStats.seamless, diagStats.reloads),
+                valueColor = if (diagStats.reloads > 0) C.accent else C.fav,
+                onLongClick = { diag.reset(); diagVersion++ },
+            ) { diagVersion++ }
+        }
+        item {
+            val d = diagStats
+            Text(
+                s.diagDetail(d.frozen, d.ended, d.buffering, d.errors, dmy(d.since)) + (d.lastError?.let { " ($it)" } ?: ""),
+                color = C.dim, fontSize = 12.sp,
+            )
         }
 
         item { SectionTitle(s.secData) }
